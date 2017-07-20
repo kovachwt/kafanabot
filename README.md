@@ -1,2 +1,2 @@
 # kafanabot
-Telegram bot that sends you notifications for keywords mentioned in group chats.
+This Telegram bot will send you notifications if any of your keywords appear on a group chat that you are in.
