@@ -200,6 +200,9 @@ namespace LezetBot
             var msg = e.Message;
             if (msg == null) return;
 
+            if (Debugger.IsAttached)
+                Log(false, msg.Date.ToString("yyyy-MM-dd HH:mm:ss ") + msg.From.FirstName + ": " + msg.Text);
+
             if (msg.Chat.Type == ChatType.Private)
                 SetChatID(msg.From.Id, msg.Chat.Id);
 
@@ -216,7 +219,7 @@ namespace LezetBot
                         AddUser(msg.Chat.Id, u.Id);
             }
 
-            if (msg.Type != MessageType.TextMessage) return;
+            if (msg.Type != MessageType.Text) return;
 
 
             string text = msg.Text.ToLower();

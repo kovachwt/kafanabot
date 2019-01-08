@@ -2,13 +2,14 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>netcoreapp1.1</TargetFramework>
+    <TargetFramework>netcoreapp2.1</TargetFramework>
     <RuntimeIdentifiers>win10-x64</RuntimeIdentifiers>
+    <StartupObject>LezetBot.Program</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="10.0.3" />
-    <PackageReference Include="Telegram.Bot" Version="13.0.0-beta-02" />
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+    <PackageReference Include="Telegram.Bot" Version="14.10.0" />
   </ItemGroup>
 
 </Project>
