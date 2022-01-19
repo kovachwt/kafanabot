@@ -10,6 +10,12 @@ using Telegram.Bot;
 using Telegram.Bot.Args;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Extensions.Polling;
+using Telegram.Bot.Exceptions;
+using Telegram.Bot.Types.InlineQueryResults;
+using Telegram.Bot.Types.InputFiles;
+using Telegram.Bot.Types.ReplyMarkups;
+using System.Threading.Tasks;
 
 namespace LezetBot
 {
@@ -20,16 +26,16 @@ namespace LezetBot
         static TelegramBotClient Bot;
         static string BotUsername;
 
-        static Dictionary<int, string> UserKeywords = new Dictionary<int, string>();
+        static Dictionary<long, string> UserKeywords = new Dictionary<long, string>();
         static object lckUserKeywords = new object();
 
-        static Dictionary<int, long> UserChatIDs = new Dictionary<int, long>();
+        static Dictionary<long, long> UserChatIDs = new Dictionary<long, long>();
         static object lckUserChatIDs = new object();
 
-        static Dictionary<int, string> Usernames = new Dictionary<int, string>();
+        static Dictionary<long, string> Usernames = new Dictionary<long, string>();
         static object lckUsernames = new object();
 
-        static Dictionary<long, List<int>> ChatUsers = new Dictionary<long, List<int>>();
+        static Dictionary<long, List<long>> ChatUsers = new Dictionary<long, List<long>>();
         static object lckChatUsers = new object();
 
         static string SaveFile;
@@ -54,19 +60,86 @@ namespace LezetBot
             string apiKey = System.IO.File.ReadAllText(appfolder + "api.key").Trim();
             Bot = new TelegramBotClient(apiKey);
 
+            /*
             Bot.OnMessage += BotOnMessageReceived;
             Bot.OnMessageEdited += BotOnMessageReceived;
             Bot.OnReceiveError += BotOnReceiveError;
+            */
 
             var me = Bot.GetMeAsync().Result;
             BotUsername = me.Username;
             Console.Title = BotUsername;
-            Bot.StartReceiving();
+
+
+            using var cts = new CancellationTokenSource();
+            var cancellationToken = cts.Token;
+            ReceiverOptions receiverOptions = new()
+            {
+                AllowedUpdates = new UpdateType[] {
+                UpdateType.CallbackQuery,
+                //UpdateType.ChannelPost,
+                //UpdateType.ChatJoinRequest,
+                UpdateType.ChatMember,
+                UpdateType.ChosenInlineResult, 
+                //UpdateType.EditedChannelPost, 
+                UpdateType.EditedMessage,
+                UpdateType.InlineQuery,
+                UpdateType.Message,
+                UpdateType.MyChatMember,
+                UpdateType.Poll,
+                UpdateType.PollAnswer, 
+                //UpdateType.PreCheckoutQuery, 
+                //UpdateType.ShippingQuery 
+            }
+            };
+
+            Bot.StartReceiving(
+                HandleUpdateAsync,
+                HandleErrorAsync,
+                receiverOptions,
+                cancellationToken
+            );
 
             _quitEvent.WaitOne();
 
-            Bot.StopReceiving();
+            cts.Cancel();
+
             SaveData();
+        }
+
+        public static async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
+        {
+            var handler = update.Type switch
+            {
+                // UpdateType.Unknown:
+                // UpdateType.ChannelPost:
+                // UpdateType.EditedChannelPost:
+                // UpdateType.ShippingQuery:
+                // UpdateType.PreCheckoutQuery:
+                // UpdateType.Poll:
+                UpdateType.Message => BotOnMessageReceived(botClient, update.Message!),
+                UpdateType.EditedMessage => BotOnMessageReceived(botClient, update.EditedMessage!),
+                UpdateType.ChatMember => BotOnChatMember(botClient, update.ChatMember!),
+                //UpdateType.CallbackQuery => BotOnCallbackQueryReceived(botClient, update.CallbackQuery!),
+                //UpdateType.InlineQuery => BotOnInlineQueryReceived(botClient, update.InlineQuery!),
+                //UpdateType.ChosenInlineResult => BotOnChosenInlineResultReceived(botClient, update.ChosenInlineResult!),
+                _ => UnknownUpdateHandlerAsync(botClient, update)
+            };
+
+            try
+            {
+                await handler;
+            }
+            catch (Exception exception)
+            {
+                await HandleErrorAsync(botClient, exception, cancellationToken);
+            }
+        }
+
+        private static Task UnknownUpdateHandlerAsync(ITelegramBotClient botClient, Update update)
+        {
+            Log(false, $"Unhandled update type {update.Type}, serialized=" + JsonConvert.SerializeObject(update));
+            return Task.CompletedTask;
         }
 
         static void Log(bool iserror, string text)
@@ -84,7 +157,7 @@ namespace LezetBot
                 if (System.IO.File.Exists(SaveFile))
                 {
                     string json = System.IO.File.ReadAllText(SaveFile);
-                    var data = JsonConvert.DeserializeObject<Tuple<Dictionary<int, string>, Dictionary<int, long>, Dictionary<int, string>, Dictionary<long, List<int>>>>(json);
+                    var data = JsonConvert.DeserializeObject<Tuple<Dictionary<long, string>, Dictionary<long, long>, Dictionary<long, string>, Dictionary<long, List<long>>>>(json);
                     if (data.Item1 != null)
                         UserKeywords = data.Item1;
                     if (data.Item2 != null)
@@ -101,19 +174,19 @@ namespace LezetBot
         {
             lock (lckSavefile)
             {
-                var data = new Tuple<Dictionary<int, string>, Dictionary<int, long>, Dictionary<int, string>, Dictionary<long, List<int>>>(UserKeywords, UserChatIDs, Usernames, ChatUsers);
+                var data = new Tuple<Dictionary<long, string>, Dictionary<long, long>, Dictionary<long, string>, Dictionary<long, List<long>>>(UserKeywords, UserChatIDs, Usernames, ChatUsers);
                 System.IO.File.WriteAllText(SaveFile, JsonConvert.SerializeObject(data));
             }
         }
 
-        static string GetKeywords(int uid)
+        static string GetKeywords(long uid)
         {
             lock (lckUserKeywords)
             {
                 return UserKeywords.ContainsKey(uid) ? UserKeywords[uid] : null;
             }
         }
-        static void SetKeywords(int uid, string keywords)
+        static void SetKeywords(long uid, string keywords)
         {
             lock (lckUserKeywords)
             {
@@ -122,14 +195,14 @@ namespace LezetBot
             SaveData();
         }
 
-        static long GetChatID(int uid)
+        static long GetChatID(long uid)
         {
             lock (lckUserChatIDs)
             {
                 return UserChatIDs.ContainsKey(uid) ? UserChatIDs[uid] : long.MinValue;
             }
         }
-        static void SetChatID(int uid, long chatid)
+        static void SetChatID(long uid, long chatid)
         {
             lock (lckUserChatIDs)
             {
@@ -141,14 +214,14 @@ namespace LezetBot
             }
         }
 
-        static string GetUsername(int uid)
+        static string GetUsername(long uid)
         {
             lock (lckUsernames)
             {
                 return Usernames.ContainsKey(uid) ? Usernames[uid] : null;
             }
         }
-        static void SetUsername(int uid, string username)
+        static void SetUsername(long uid, string username)
         {
             lock (lckUsernames)
             {
@@ -160,22 +233,22 @@ namespace LezetBot
             }
         }
 
-        static List<int> GetUsers(long chatid)
+        static List<long> GetUsers(long chatid)
         {
             lock (lckChatUsers)
             {
-                List<int> result = new List<int>();
+                List<long> result = new List<long>();
                 if (ChatUsers.ContainsKey(chatid))
                     result.AddRange(ChatUsers[chatid]);
                 return result;
             }
         }
-        static void AddUser(long chatid, int uid)
+        static void AddUser(long chatid, long uid)
         {
             lock (lckChatUsers)
             {
                 if (!ChatUsers.ContainsKey(chatid))
-                    ChatUsers[chatid] = new List<int>();
+                    ChatUsers[chatid] = new List<long>();
                 if (!ChatUsers[chatid].Contains(uid))
                 {
                     ChatUsers[chatid].Add(uid);
@@ -183,7 +256,7 @@ namespace LezetBot
                 }
             }
         }
-        static void DelUser(long chatid, int uid)
+        static void DelUser(long chatid, long uid)
         {
             lock (lckChatUsers)
             {
@@ -195,13 +268,36 @@ namespace LezetBot
             }
         }
 
-        private static async void BotOnMessageReceived(object sender, MessageEventArgs e)
+        public static async Task BotOnChatMember(ITelegramBotClient botClient, ChatMemberUpdated update)
         {
-            var msg = e.Message;
+            Log(false, "ChatMemberUPDATE: " + JsonConvert.SerializeObject(update));
+
+            if (update.OldChatMember != null && update.OldChatMember.Status == ChatMemberStatus.Left
+                || update.NewChatMember != null && update.NewChatMember.Status == ChatMemberStatus.Left)
+            {
+                await SendShockedGif(update.Chat);
+            }
+        }
+
+        private static async Task SendShockedGif(Chat chat)
+        {
+            string gifurl = "https://media2.giphy.com/media/l0NgR62Ooi7ftNlHq/giphy.gif";
+            InputOnlineFile file = new InputOnlineFile(new Uri(gifurl));
+            await Bot.SendAnimationAsync(chat.Id, file);
+        }
+
+        public static async Task BotOnMessageReceived(ITelegramBotClient botClient, Message msg)
+        {
             if (msg == null) return;
 
+            if (msg.LeftChatMember != null)
+                await SendShockedGif(msg.Chat);
+
             if (Debugger.IsAttached)
+            {
                 Log(false, msg.Date.ToString("yyyy-MM-dd HH:mm:ss ") + msg.From.FirstName + ": " + msg.Text);
+                Log(false, "JSON= " + JsonConvert.SerializeObject(msg));
+            }
 
             if (msg.Chat.Type == ChatType.Private)
                 SetChatID(msg.From.Id, msg.Chat.Id);
@@ -280,11 +376,11 @@ namespace LezetBot
 
                 var chatusers = GetUsers(msg.Chat.Id);
 
-                List<int> users;
+                List<long> users;
                 lock (lckUserKeywords)
                     users = UserKeywords.Keys.ToList();
 
-                foreach (int uid in users)
+                foreach (long uid in users)
                 {
                     if (msg.From.Id == uid) continue;
                     if (!chatusers.Contains(uid)) continue;
@@ -306,7 +402,7 @@ namespace LezetBot
             }
         }
 
-        static async void SendNotification(int uid, string word, Message msg)
+        static async void SendNotification(long uid, string word, Message msg)
         {
             Log(false, "Sending notification for " + word + " to " + uid + ", text: " + msg.Text);
             long chatid = GetChatID(uid);
@@ -318,12 +414,20 @@ namespace LezetBot
             await Bot.ForwardMessageAsync(chatid, msg.Chat.Id, msg.MessageId);
         }
 
-        private static void BotOnReceiveError(object sender, ReceiveErrorEventArgs e)
+        public static Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
         {
-            Log(true, e.ApiRequestException.ToString());
+            var ErrorMessage = exception switch
+            {
+                ApiRequestException apiRequestException => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
+                _ => exception.ToString()
+            };
+
+            Log(true, ErrorMessage);
 
             if (Debugger.IsAttached)
                 Debugger.Break();
+
+            return Task.CompletedTask;
         }
 
     }
