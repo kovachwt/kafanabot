@@ -7,14 +7,11 @@ using System.Collections.Generic;
 using System.Reflection;
 using Newtonsoft.Json;
 using Telegram.Bot;
-using Telegram.Bot.Args;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Extensions.Polling;
+using Telegram.Bot.Polling;
 using Telegram.Bot.Exceptions;
-using Telegram.Bot.Types.InlineQueryResults;
 using Telegram.Bot.Types.InputFiles;
-using Telegram.Bot.Types.ReplyMarkups;
 using System.Threading.Tasks;
 
 namespace LezetBot
@@ -47,7 +44,8 @@ namespace LezetBot
         static void Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
-            Console.CancelKeyPress += (sender, eArgs) => {
+            Console.CancelKeyPress += (sender, eArgs) =>
+            {
                 _quitEvent.Set();
                 eArgs.Cancel = true;
             };
@@ -76,21 +74,21 @@ namespace LezetBot
             ReceiverOptions receiverOptions = new()
             {
                 AllowedUpdates = new UpdateType[] {
-                UpdateType.CallbackQuery,
-                //UpdateType.ChannelPost,
-                //UpdateType.ChatJoinRequest,
-                UpdateType.ChatMember,
-                UpdateType.ChosenInlineResult, 
-                //UpdateType.EditedChannelPost, 
-                UpdateType.EditedMessage,
-                UpdateType.InlineQuery,
-                UpdateType.Message,
-                UpdateType.MyChatMember,
-                UpdateType.Poll,
-                UpdateType.PollAnswer, 
-                //UpdateType.PreCheckoutQuery, 
-                //UpdateType.ShippingQuery 
-            }
+                    UpdateType.CallbackQuery,
+                    //UpdateType.ChannelPost,
+                    //UpdateType.ChatJoinRequest,
+                    UpdateType.ChatMember,
+                    UpdateType.ChosenInlineResult, 
+                    //UpdateType.EditedChannelPost, 
+                    UpdateType.EditedMessage,
+                    UpdateType.InlineQuery,
+                    UpdateType.Message,
+                    UpdateType.MyChatMember,
+                    UpdateType.Poll,
+                    UpdateType.PollAnswer, 
+                    //UpdateType.PreCheckoutQuery, 
+                    //UpdateType.ShippingQuery 
+                }
             };
 
             Bot.StartReceiving(
