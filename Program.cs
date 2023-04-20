@@ -13,12 +13,26 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.InputFiles;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
+using OpenAI_API;
+using System.Net.Http;
+using System.Security.Authentication;
+using OpenAI_API.Chat;
+using OpenAI_API.Models;
 
 namespace LezetBot
 {
+    struct MsgRecord
+    {
+        public DateTime when; public string user; public string msg;
+    }
+
     class Program
     {
         public static ManualResetEvent _quitEvent = new ManualResetEvent(false);
+
+        static string OpenAIApiKey = "INSERT_OPENAI_API_KEY_HERE";
+        static string ChatAISystemMessage = "You are a bot that summarizes chat message history. The user will provide chat history in Macedonian or English language, or mixture of the two, and you respond with a one paragraph summary of that chat.";
 
         static TelegramBotClient Bot;
         static string BotUsername;
@@ -34,6 +48,10 @@ namespace LezetBot
 
         static Dictionary<long, List<long>> ChatUsers = new Dictionary<long, List<long>>();
         static object lckChatUsers = new object();
+
+        static Dictionary<long, List<MsgRecord>> RecentMessages = new Dictionary<long, List<MsgRecord>>();
+        static object lckRecentMessages = new object();
+        static string RecentFile;
 
         static string SaveFile;
         static object lckSavefile = new object();
@@ -53,6 +71,7 @@ namespace LezetBot
             string appfolder = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location) + Path.DirectorySeparatorChar;
             LogFile = appfolder + "kafanabot.log";
             SaveFile = appfolder + "kafanabot.json";
+            RecentFile = appfolder + "kafanabot_recent.json";
             LoadSaved();
 
             string apiKey = System.IO.File.ReadAllText(appfolder + "api.key").Trim();
@@ -134,6 +153,22 @@ namespace LezetBot
             }
         }
 
+        public static Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
+        {
+            var ErrorMessage = exception switch
+            {
+                ApiRequestException apiRequestException => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
+                _ => exception.ToString()
+            };
+
+            Log(true, ErrorMessage);
+
+            if (Debugger.IsAttached)
+                Debugger.Break();
+
+            return Task.CompletedTask;
+        }
+
         private static Task UnknownUpdateHandlerAsync(ITelegramBotClient botClient, Update update)
         {
             Log(false, $"Unhandled update type {update.Type}, serialized=" + JsonConvert.SerializeObject(update));
@@ -164,6 +199,11 @@ namespace LezetBot
                         Usernames = data.Item3;
                     if (data.Item4 != null)
                         ChatUsers = data.Item4;
+                }
+                if (System.IO.File.Exists(RecentFile))
+                {
+                    string json = System.IO.File.ReadAllText(RecentFile);
+                    RecentMessages = JsonConvert.DeserializeObject<Dictionary<long, List<MsgRecord>>>(json);
                 }
             }
         }
@@ -286,7 +326,8 @@ namespace LezetBot
 
         public static async Task BotOnMessageReceived(ITelegramBotClient botClient, Message msg)
         {
-            if (msg == null) return;
+            if (msg == null) 
+                return;
 
             if (msg.LeftChatMember != null)
                 await SendShockedGif(msg.Chat);
@@ -313,7 +354,8 @@ namespace LezetBot
                         AddUser(msg.Chat.Id, u.Id);
             }
 
-            if (msg.Type != MessageType.Text) return;
+            if (msg.Type != MessageType.Text) 
+                return;
 
 
             string text = msg.Text.ToLower();
@@ -332,13 +374,18 @@ namespace LezetBot
                 {
                     string keywords = text.Substring("/keywords ".Length);
 
-                    var punctuation = keywords.Where(Char.IsPunctuation).Distinct().ToArray();
-                    var words = keywords.Split().Select(x => x.Trim(punctuation)).Where(w => w.Trim() != "");
-
-                    keywords = String.Join(" ", words.Distinct().ToArray());
-
-                    SetKeywords(msg.From.Id, keywords);
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, "Done, new keywords are: " + keywords);
+                    var kpunctuation = keywords.Where(Char.IsPunctuation).Distinct().ToArray();
+                    var kwords = keywords.Split().Select(x => x.Trim(kpunctuation)).Where(w => w.Trim() != "");
+                    if (kwords.Count() == 0)
+                    {
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You didn't specify any keywords!");
+                    }
+                    else
+                    {
+                        keywords = String.Join(" ", kwords.Distinct().ToArray());
+                        SetKeywords(msg.From.Id, keywords);
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, "Done, new keywords are: " + keywords);
+                    }
                 }
                 else if (text.StartsWith("/delkeywords"))
                 {
@@ -350,12 +397,33 @@ namespace LezetBot
                     string keywords = GetKeywords(msg.From.Id);
                     await Bot.SendTextMessageAsync(msg.Chat.Id, "Your keywords are: " + keywords);
                 }
+                else if (text.StartsWith("/summarize"))
+                {
+                    if (!int.TryParse(text.Substring("/summarize".Length).Trim(), out int minutes))
+                        minutes = 60;
+
+                    string summary = await SummarizeRecent(msg.Chat.Id, minutes);
+                    await Bot.SendTextMessageAsync(msg.Chat.Id, summary);
+                }
+                else if (text.StartsWith("/chatgpt "))
+                {
+                    string texttosend = text.Substring("/chatgpt ".Length);
+                    if (texttosend.Trim() == "")
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You must provide the text to send!");
+                    else
+                    {
+                        string gptreseponse = await SummarizeRecent(msg.Chat.Id, texttosend: texttosend);
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, gptreseponse);
+                    }
+                }
                 else
                 {
                     var usage = @"Usage:
 /keywords       - send a new list of notification keywords (list of keywords separated by spaces)
 /delkeywords    - empty your list of notification keywords (no more notifications)
 /showkeywords   - show your current notification keywords
+/summarize      - summarize X minutes of chat history with ChatGPT
+/chatgpt        - send user text directly to ChatGPT and get response
 ";
                     await Bot.SendTextMessageAsync(msg.Chat.Id, usage);
                 }
@@ -366,12 +434,15 @@ namespace LezetBot
                 return;
             }
 
+            var punctuation = text.Where(Char.IsPunctuation).Distinct().ToArray();
+            var words = text.Split().Select(x => x.Trim(punctuation)).Where(x => x.Trim() != "");
+            if (words.Count() == 0) 
+                return;
+            
+            RecordMessage(msg);
+
             if (msg.Chat.Type != ChatType.Private)
             {
-                var punctuation = text.Where(Char.IsPunctuation).Distinct().ToArray();
-                var words = text.Split().Select(x => x.Trim(punctuation)).Where(x => x.Trim() != "");
-                if (words.Count() == 0) return;
-
                 var chatusers = GetUsers(msg.Chat.Id);
 
                 List<long> users;
@@ -412,21 +483,79 @@ namespace LezetBot
             await Bot.ForwardMessageAsync(chatid, msg.Chat.Id, msg.MessageId);
         }
 
-        public static Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
+
+        static void RecordMessage(Message msg)
         {
-            var ErrorMessage = exception switch
+            lock (lckRecentMessages)
             {
-                ApiRequestException apiRequestException => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
-                _ => exception.ToString()
-            };
+                var chatid = msg.Chat.Id;
+                if (!RecentMessages.ContainsKey(chatid))
+                    RecentMessages[chatid] = new List<MsgRecord>();
 
-            Log(true, ErrorMessage);
+                string name = (("" + msg.From.FirstName).Trim() + " " + ("" + msg.From.LastName).Trim()).Trim();
+                RecentMessages[chatid].Add(new MsgRecord() { when = DateTime.UtcNow, user = name, msg = msg.Text });
 
-            if (Debugger.IsAttached)
-                Debugger.Break();
+                var oldmsgs = RecentMessages[chatid].Where(m => m.when < DateTime.UtcNow.AddDays(-7)).OrderBy(m => m.when);
+                if (oldmsgs.Count() > 0)
+                    RecentMessages[chatid].RemoveRange(0, RecentMessages[chatid].IndexOf(oldmsgs.Last()) + 1);
 
-            return Task.CompletedTask;
+                System.IO.File.WriteAllText(RecentFile, JsonConvert.SerializeObject(RecentMessages));
+            }
         }
 
+        static List<MsgRecord> GetMessages(long chatid)
+        {
+            lock (lckRecentMessages)
+            {
+                if (RecentMessages.ContainsKey(chatid))
+                    return RecentMessages[chatid];
+                return new List<MsgRecord>();
+            }
+        }
+
+        static async Task<string> SummarizeRecent(long chatid, int? minutes = null, string texttosend = null)
+        {
+            string text = "" + texttosend;
+            if (minutes != null)
+            {
+                var allmsgs = GetMessages(chatid);
+                var msgs = allmsgs.Where(m => m.when >= DateTime.UtcNow.AddMinutes(-minutes.Value));
+                if (msgs.Count() == 0)
+                    return "";
+                text = String.Join("\n\n", msgs.Select(m => m.user + ": " + m.msg.Replace("\r\n", "\n").Replace("\r", "\n")));
+            }
+
+            OpenAIAPI api = new OpenAIAPI(OpenAIApiKey);
+
+            string response;
+            try
+            {
+                var result = await api.Chat.CreateChatCompletionAsync(new ChatRequest()
+                {
+                    Model = Model.ChatGPTTurbo,
+                    //Temperature = 0.1,
+                    //MaxTokens = 50,
+                    Messages = new ChatMessage[] {
+                    new ChatMessage(ChatMessageRole.System, ChatAISystemMessage),
+                    new ChatMessage(ChatMessageRole.User, text)
+                }
+                });
+                if (result.Choices.Count > 0)
+                    response = result.Choices[0].Message.Content;
+                else
+                    response = "No response from ChatGPT!";
+            }
+            catch (AuthenticationException ex)
+            {
+                response = ex.Message;
+            }
+            catch (HttpRequestException ex)
+            {
+                response = ex.ToString();
+            }
+
+            Log(false, "ChatGPT PROMPT=\n" + text + "\n\n\nRESPONSE=" + response);
+            return response;
+        }
     }
 }
