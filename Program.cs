@@ -324,6 +324,7 @@ namespace LezetBot
                 || update.NewChatMember != null && update.NewChatMember.Status == ChatMemberStatus.Left)
             {
                 await SendShockedGif(update.Chat);
+                DelUser(update.Chat.Id, update.OldChatMember?.User?.Id ?? update.From.Id);
             }
         }
 
