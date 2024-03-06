@@ -12,12 +12,14 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Exceptions;
 using System.Threading.Tasks;
-using System.Security.Cryptography;
 using OpenAI_API;
 using System.Net.Http;
 using System.Security.Authentication;
 using OpenAI_API.Chat;
 using OpenAI_API.Models;
+using RestSharp;
+using Newtonsoft.Json.Linq;
+using System.Net;
 
 namespace LezetBot
 {
@@ -31,6 +33,7 @@ namespace LezetBot
         public static ManualResetEvent _quitEvent = new ManualResetEvent(false);
 
         static string OpenAIApiKey = "INSERT_OPENAI_API_KEY_HERE";
+        static string ClaudeApiKey = "INSERT_ANTHROPIC_API_KEY_HERE";
         static string ChatAISystemMessage = 
 "You are a bot that summarizes chat message history.\n"
 + "The user will provide chat history in Macedonian or English language, or a mixture of the two, "
@@ -472,8 +475,19 @@ namespace LezetBot
                         await Bot.SendTextMessageAsync(msg.Chat.Id, "You must provide the text to send!");
                     else
                     {
-                        string gptreseponse = await SummarizeRecent(msg.Chat.Id, texttosend: texttosend);
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, gptreseponse);
+                        var botreseponse = await DoAIcallGPT4(ClaudeApiKey, "", texttosend);
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
+                    }
+                }
+                else if (text.StartsWith("/claude "))
+                {
+                    string texttosend = text.Substring("/claude ".Length);
+                    if (texttosend.Trim() == "")
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You must provide the text to send!");
+                    else
+                    {
+                        var botreseponse = await DoAIcallClaude(ClaudeApiKey, "", texttosend);
+                        await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
                     }
                 }
                 else
@@ -485,6 +499,7 @@ namespace LezetBot
 /summarize      - summarize X minutes of chat history with ChatGPT
 /сиже           - ChatGPT сиже на X минути чет историја
 /chatgpt        - send user text directly to ChatGPT and get response
+/claude         - send user text directly to Claude and get response
 /drama          - toggle drama
 ";
                     await Bot.SendTextMessageAsync(msg.Chat.Id, usage);
@@ -587,24 +602,31 @@ namespace LezetBot
                 text = String.Join("\n\n", msgs.Select(m => m.user + ": " + m.msg.Replace("\r\n", "\n").Replace("\r", "\n")));
             }
 
-            OpenAIAPI api = new OpenAIAPI(OpenAIApiKey);
+            string system = mkprompt ? ChatAISystemMessageMK : ChatAISystemMessage;
 
+            return await DoAIcallClaude(ClaudeApiKey, system, text);
+            //return await DoAIcallGPT4(OpenAIApiKey, system, text);
+        }
+
+        static async Task<string> DoAIcallGPT4(string apikey, string systemprompt, string usertext)
+        {
             string response;
             string debug = "";
             try
             {
+                OpenAIAPI api = new OpenAIAPI(apikey);
                 var result = await api.Chat.CreateChatCompletionAsync(new ChatRequest()
                 {
                     Model = Model.GPT4,
                     //Temperature = 0.1,
                     //MaxTokens = 50,
                     Messages = new ChatMessage[] {
-                    new ChatMessage(ChatMessageRole.System, mkprompt ? ChatAISystemMessageMK : ChatAISystemMessage),
-                    new ChatMessage(ChatMessageRole.User, text)
+                    new ChatMessage(ChatMessageRole.System, systemprompt),
+                    new ChatMessage(ChatMessageRole.User, usertext)
                 }
                 });
                 if (result.Choices.Count > 0)
-                    response = result.Choices[0].Message.Content;
+                    response = result.Choices[0].Message.TextContent;
                 else
                     response = "No response from ChatGPT!";
                 debug = $"Tokens: Prompt={result.Usage.PromptTokens} Completion={result.Usage.CompletionTokens} Total={result.Usage.TotalTokens}";
@@ -617,8 +639,52 @@ namespace LezetBot
             {
                 response = ex.ToString();
             }
+            
+            Log(false, $"ChatGPT PROMPT=\n{usertext}\n\n\nRESPONSE={response}\n\nDEBUG={debug}");
+            
+            return response;
+        }
 
-            Log(false, $"ChatGPT PROMPT=\n{text}\n\n\nRESPONSE={response}\n\nDEBUG={debug}");
+        static async Task<string> DoAIcallClaude(string apikey, string systemprompt, string usertext)
+        {
+            RestRequest request = new RestRequest("https://api.anthropic.com/v1/messages", Method.Post);
+            request.AddHeader("x-api-key", apikey);
+            request.AddHeader("anthropic-version", "2023-06-01");
+            request.AddHeader("content-type", "application/json");
+
+            var req = new
+            {
+                model = "claude-3-opus-20240229",
+                max_tokens = 500,  // $0.075 cents per 1000 output tokens
+                system = systemprompt,
+                temperature = 0.8,
+                messages = new[] { new { role = "user", content = usertext } }
+            };
+
+            string response;
+            string debug;
+            try
+            {
+                request.AddJsonBody(req);
+
+                var res = await new RestClient().ExecuteAsync(request);
+                var resp = res.Content;
+                var status = res.StatusCode;
+                var resobj = status == HttpStatusCode.NoContent ? null : JObject.Parse(resp);
+
+                if (status == HttpStatusCode.OK && resobj != null && resobj["content"] != null && resobj["content"].HasValues)
+                    response = (string)resobj["content"].First()["text"];
+                else
+                    response = "Can't parse Claude response!";
+                debug = resp;
+            }
+            catch (Exception ex)
+            {
+                debug = ex.ToString();
+                response = ex.Message;
+            }
+            Log(false, $"Claude PROMPT=\n{usertext}\n\n\nRESPONSE={response}\n\nDEBUG={debug}");
+
             return response;
         }
     }
