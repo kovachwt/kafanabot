@@ -11,7 +11,6 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Exceptions;
-using Telegram.Bot.Types.InputFiles;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
 using OpenAI_API;
@@ -58,6 +57,9 @@ namespace LezetBot
 
         static Dictionary<long, List<long>> ChatUsers = new Dictionary<long, List<long>>();
         static object lckChatUsers = new object();
+
+        static List<long> SkipDrama = new List<long>();
+        static object lckSkipDrama = new object();
 
         static Dictionary<long, List<MsgRecord>> RecentMessages = new Dictionary<long, List<MsgRecord>>();
         static object lckRecentMessages = new object();
@@ -200,7 +202,13 @@ namespace LezetBot
                 if (System.IO.File.Exists(SaveFile))
                 {
                     string json = System.IO.File.ReadAllText(SaveFile);
-                    var data = JsonConvert.DeserializeObject<Tuple<Dictionary<long, string>, Dictionary<long, long>, Dictionary<long, string>, Dictionary<long, List<long>>>>(json);
+                    var data = JsonConvert.DeserializeObject<Tuple<
+                        Dictionary<long, string>, 
+                        Dictionary<long, long>, 
+                        Dictionary<long, string>, 
+                        Dictionary<long, List<long>>,
+                        List<long>
+                        >>(json);
                     if (data.Item1 != null)
                         UserKeywords = data.Item1;
                     if (data.Item2 != null)
@@ -209,6 +217,8 @@ namespace LezetBot
                         Usernames = data.Item3;
                     if (data.Item4 != null)
                         ChatUsers = data.Item4;
+                    if (data.Item5 != null)
+                        SkipDrama = data.Item5;
                 }
                 if (System.IO.File.Exists(RecentFile))
                 {
@@ -222,7 +232,13 @@ namespace LezetBot
         {
             lock (lckSavefile)
             {
-                var data = new Tuple<Dictionary<long, string>, Dictionary<long, long>, Dictionary<long, string>, Dictionary<long, List<long>>>(UserKeywords, UserChatIDs, Usernames, ChatUsers);
+                var data = new Tuple<
+                    Dictionary<long, string>, 
+                    Dictionary<long, long>, 
+                    Dictionary<long, string>, 
+                    Dictionary<long, List<long>>,
+                    List<long>
+                    >(UserKeywords, UserChatIDs, Usernames, ChatUsers, SkipDrama);
                 System.IO.File.WriteAllText(SaveFile, JsonConvert.SerializeObject(data));
             }
         }
@@ -330,9 +346,30 @@ namespace LezetBot
 
         private static async Task SendShockedGif(Chat chat)
         {
+            lock (lckSkipDrama)
+            {
+                if (SkipDrama.Contains(chat.Id))
+                    return;
+            }
+
             string gifurl = "https://media2.giphy.com/media/l0NgR62Ooi7ftNlHq/giphy.gif";
-            InputOnlineFile file = new InputOnlineFile(new Uri(gifurl));
+            var file = new Telegram.Bot.Types.InputFileUrl(new Uri(gifurl));
             await Bot.SendAnimationAsync(chat.Id, file);
+        }
+
+        private static string ToggleDrama(Chat chat)
+        {
+            bool alreadyskipped = false;
+            lock (lckSkipDrama)
+            {
+                alreadyskipped = SkipDrama.Contains(chat.Id);
+                if (alreadyskipped)
+                    SkipDrama.Remove(chat.Id);
+                else
+                    SkipDrama.Add(chat.Id);
+                SaveData();
+            }
+            return alreadyskipped ? "Be more annoying, got it 👍" : "Sorry, won't happen again 🥹";
         }
 
         public static async Task BotOnMessageReceived(ITelegramBotClient botClient, Message msg)
@@ -408,6 +445,10 @@ namespace LezetBot
                     string keywords = GetKeywords(msg.From.Id);
                     await Bot.SendTextMessageAsync(msg.Chat.Id, "Your keywords are: " + keywords);
                 }
+                else if (text.StartsWith("/drama"))
+                {
+                    await Bot.SendTextMessageAsync(msg.Chat.Id, ToggleDrama(msg.Chat));
+                }
                 else if (text.StartsWith("/summarize"))
                 {
                     if (!int.TryParse(text.Substring("/summarize".Length).Trim(), out int minutes))
@@ -444,6 +485,7 @@ namespace LezetBot
 /summarize      - summarize X minutes of chat history with ChatGPT
 /сиже           - ChatGPT сиже на X минути чет историја
 /chatgpt        - send user text directly to ChatGPT and get response
+/drama          - toggle drama
 ";
                     await Bot.SendTextMessageAsync(msg.Chat.Id, usage);
                 }
