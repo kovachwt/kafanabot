@@ -409,17 +409,19 @@ namespace LezetBot
                 return;
 
 
-            string text = msg.Text.ToLower();
+            string text = msg.Text.ToLower().Trim();
             //Console.WriteLine(msg.Date.ToString("HH:mm:ss ") + msg.From.Username + ": " + text);
 
-            bool msgtobot = false;
-            if (text.StartsWith("@" + BotUsername.ToLower() + " "))
+            bool botcommand = false;
+            if (text.StartsWith("@" + BotUsername.ToLower() + " /"))
             {
                 text = text.Substring(BotUsername.Length + 1).Trim();
-                msgtobot = true;
+                botcommand = true;
             }
 
-            if (msg.Chat.Type == ChatType.Private || msgtobot)
+            bool botmentioned = text.Contains("@" + BotUsername.ToLower());
+
+            if (msg.Chat.Type == ChatType.Private || botcommand)
             {
                 if (text.StartsWith("/keywords "))
                 {
@@ -492,7 +494,7 @@ namespace LezetBot
                 }
                 else
                 {
-                    var usage = @"Usage:
+                    var usage = @"Bot commands:
 /keywords       - send a new list of notification keywords (list of keywords separated by spaces)
 /delkeywords    - empty your list of notification keywords (no more notifications)
 /showkeywords   - show your current notification keywords
@@ -515,7 +517,47 @@ namespace LezetBot
             var words = text.Split().Select(x => x.Trim(punctuation)).Where(x => x.Trim() != "");
             if (words.Count() == 0) 
                 return;
-            
+
+
+            RecordMessage(msg);
+
+            if (botmentioned && msg.Chat.Type != ChatType.Private)
+            {
+                // group chat with Claude
+
+                var allmsgs = GetMessages(msg.Chat.Id);
+                var msgs = allmsgs.Where(m => m.when >= DateTime.UtcNow.AddHours(-48));
+                if (msgs.Count() == 0)
+                    msgs = allmsgs.TakeLast(50);    // use 50 last messages if there is nothing in the last 24 hours
+
+                if (msgs.Count() == 0)
+                    return;
+
+                bool multipledates = msgs.Count() > 1 && (msgs.Last().when - msgs.First().when).TotalHours > 24;
+
+                string history = String.Join("\n\n", msgs.Select(m =>
+                    getdate(m.when, multipledates) + "  "
+                    + m.user + ":  " + getmsgtext(m.msg)
+                    ));
+
+                string system =
+@$"Ти си бот кој се вика {BotUsername}, и кој разговара на чет канал со луѓе.
+Како контекст ќе добиеш историја од чет пораки на македонски или англиски јазик, или мешавина од двата јазика, и треба да одговориш соодветно.
+Историјата на пораки од последните 48 часа ќе содржи информација кога е пратена секоја порака и од кого.
+Ако те прашуваат нешто треба да одговориш, или да помогнеш колку можеш.
+Ако не те прашаат туку само те спомнат, тогаш врати некоја досетлива порака која одговара на контекстот.
+If the most recent messages are in English, than respond with your message in English.
+Ако се збори Македонски, и твојата порака нека биде на Македонски.";
+
+                var botreseponse = await DoAIcallClaude(ClaudeApiKey, system, history);
+                if (!botreseponse.StartsWith("Error:"))
+                    RecordMessage(msg.Chat.Id, new MsgRecord() { msg = botreseponse, when = DateTime.UtcNow, user = BotUsername });
+
+                await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
+                return;
+            }
+
+
             RecordMessage(msg);
 
             if (msg.Chat.Type != ChatType.Private)
@@ -546,6 +588,33 @@ namespace LezetBot
                         }
                 }
             }
+
+        }
+
+        private static string getmsgtext(string text)
+        {
+            return text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n\n", "\n");
+        }
+
+        private static string getdate(DateTime when, bool multipledates)
+        {
+            var msgtime = when.ToLocalTime();
+
+            if (!multipledates) 
+                return msgtime.ToShortTimeString();
+
+            var now = DateTime.Now;
+
+            string res;
+            if (msgtime.Date == now.Date)
+                res = "Денес";
+            else if (msgtime.Date == now.AddDays(-1).Date)
+                res = "Вчера";
+            else
+                res = "На " + msgtime.ToShortDateString();
+
+            res = res + " во " + msgtime.ToShortTimeString();
+            return res;
         }
 
         static async void SendNotification(long uid, string word, Message msg)
@@ -580,6 +649,19 @@ namespace LezetBot
             }
         }
 
+        static void RecordMessage(long chatid, MsgRecord msg)
+        {
+            lock (lckRecentMessages)
+            {
+                if (!RecentMessages.ContainsKey(chatid))
+                    RecentMessages[chatid] = new List<MsgRecord>();
+
+                RecentMessages[chatid].Add(msg);
+
+                System.IO.File.WriteAllText(RecentFile, JsonConvert.SerializeObject(RecentMessages));
+            }
+        }
+
         static List<MsgRecord> GetMessages(long chatid)
         {
             lock (lckRecentMessages)
@@ -601,6 +683,9 @@ namespace LezetBot
                     return "";
                 text = String.Join("\n\n", msgs.Select(m => m.user + ": " + m.msg.Replace("\r\n", "\n").Replace("\r", "\n")));
             }
+
+            if (text.Trim() == "")
+                return "ERROR: user text is blank!";
 
             string system = mkprompt ? ChatAISystemMessageMK : ChatAISystemMessage;
 
@@ -655,7 +740,8 @@ namespace LezetBot
             var req = new
             {
                 model = "claude-3-opus-20240229",
-                max_tokens = 500,  // $0.075 cents per 1000 output tokens
+                //max_tokens = 4000,  // $0.075 cents per 1000 output tokens
+                max_tokens = 500,
                 system = systemprompt,
                 temperature = 0.8,
                 messages = new[] { new { role = "user", content = usertext } }
@@ -665,15 +751,18 @@ namespace LezetBot
             string debug;
             try
             {
+                request.Timeout = 300000;
                 request.AddJsonBody(req);
 
                 var res = await new RestClient().ExecuteAsync(request);
                 var resp = res.Content;
                 var status = res.StatusCode;
-                var resobj = status == HttpStatusCode.NoContent ? null : JObject.Parse(resp);
+                var resobj = status == HttpStatusCode.NoContent || ("" + resp) == "" ? null : JObject.Parse(resp);
 
                 if (status == HttpStatusCode.OK && resobj != null && resobj["content"] != null && resobj["content"].HasValues)
                     response = (string)resobj["content"].First()["text"];
+                else if (resobj != null && resobj["error"] != null && resobj["error"].HasValues)
+                    response = "Error: " + (string)resobj["error"]["message"];
                 else
                     response = "Can't parse Claude response!";
                 debug = resp;
@@ -681,7 +770,7 @@ namespace LezetBot
             catch (Exception ex)
             {
                 debug = ex.ToString();
-                response = ex.Message;
+                response = "Error: " + ex.Message;
             }
             Log(false, $"Claude PROMPT=\n{usertext}\n\n\nRESPONSE={response}\n\nDEBUG={debug}");
 
