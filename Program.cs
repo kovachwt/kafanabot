@@ -12,11 +12,11 @@ using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Exceptions;
 using System.Threading.Tasks;
-using OpenAI_API;
+using OpenAI;
 using System.Net.Http;
 using System.Security.Authentication;
-using OpenAI_API.Chat;
-using OpenAI_API.Models;
+using OpenAI.Chat;
+using OpenAI.Models;
 using RestSharp;
 using Newtonsoft.Json.Linq;
 using System.Net;
@@ -98,7 +98,7 @@ namespace LezetBot
             Bot.OnReceiveError += BotOnReceiveError;
             */
 
-            var me = Bot.GetMeAsync().Result;
+            var me = Bot.GetMe().Result;
             BotUsername = me.Username;
             Console.Title = BotUsername;
 
@@ -357,7 +357,7 @@ namespace LezetBot
 
             string gifurl = "https://media2.giphy.com/media/l0NgR62Ooi7ftNlHq/giphy.gif";
             var file = new Telegram.Bot.Types.InputFileUrl(new Uri(gifurl));
-            await Bot.SendAnimationAsync(chat.Id, file);
+            await Bot.SendAnimation(chat.Id, file);
         }
 
         private static string ToggleDrama(Chat chat)
@@ -431,28 +431,28 @@ namespace LezetBot
                     var kwords = keywords.Split().Select(x => x.Trim(kpunctuation)).Where(w => w.Trim() != "");
                     if (kwords.Count() == 0)
                     {
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You didn't specify any keywords!");
+                        await Bot.SendMessage(msg.Chat.Id, "You didn't specify any keywords!");
                     }
                     else
                     {
                         keywords = String.Join(" ", kwords.Distinct().ToArray());
                         SetKeywords(msg.From.Id, keywords);
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, "Done, new keywords are: " + keywords);
+                        await Bot.SendMessage(msg.Chat.Id, "Done, new keywords are: " + keywords);
                     }
                 }
                 else if (text.StartsWith("/delkeywords"))
                 {
                     SetKeywords(msg.From.Id, "");
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, "Done, no more keywords.");
+                    await Bot.SendMessage(msg.Chat.Id, "Done, no more keywords.");
                 }
                 else if (text.StartsWith("/showkeywords"))
                 {
                     string keywords = GetKeywords(msg.From.Id);
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, "Your keywords are: " + keywords);
+                    await Bot.SendMessage(msg.Chat.Id, "Your keywords are: " + keywords);
                 }
                 else if (text.StartsWith("/drama"))
                 {
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, ToggleDrama(msg.Chat));
+                    await Bot.SendMessage(msg.Chat.Id, ToggleDrama(msg.Chat));
                 }
                 else if (text.StartsWith("/summarize"))
                 {
@@ -460,7 +460,7 @@ namespace LezetBot
                         minutes = 60;
 
                     string summary = await SummarizeRecent(msg.Chat.Id, minutes);
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, summary);
+                    await Bot.SendMessage(msg.Chat.Id, summary);
                 }
                 else if (text.StartsWith("/сиже"))
                 {
@@ -468,28 +468,30 @@ namespace LezetBot
                         minutes = 60;
 
                     string summary = await SummarizeRecent(msg.Chat.Id, minutes, mkprompt: true);
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, summary);
+                    await Bot.SendMessage(msg.Chat.Id, summary);
                 }
+                /*
                 else if (text.StartsWith("/chatgpt "))
                 {
                     string texttosend = text.Substring("/chatgpt ".Length);
                     if (texttosend.Trim() == "")
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You must provide the text to send!");
+                        await Bot.SendMessage(msg.Chat.Id, "You must provide the text to send!");
                     else
                     {
-                        var botreseponse = await DoAIcallGPT4(ClaudeApiKey, "", texttosend);
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
+                        var botreseponse = await DoAIcallGPT4(OpenAIApiKey, "", texttosend);
+                        await Bot.SendMessage(msg.Chat.Id, botreseponse);
                     }
                 }
+                */
                 else if (text.StartsWith("/claude "))
                 {
                     string texttosend = text.Substring("/claude ".Length);
                     if (texttosend.Trim() == "")
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, "You must provide the text to send!");
+                        await Bot.SendMessage(msg.Chat.Id, "You must provide the text to send!");
                     else
                     {
                         var botreseponse = await DoAIcallClaude(ClaudeApiKey, "", texttosend);
-                        await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
+                        await Bot.SendMessage(msg.Chat.Id, botreseponse);
                     }
                 }
                 else
@@ -504,7 +506,7 @@ namespace LezetBot
 /claude         - send user text directly to Claude and get response
 /drama          - toggle drama
 ";
-                    await Bot.SendTextMessageAsync(msg.Chat.Id, usage);
+                    await Bot.SendMessage(msg.Chat.Id, usage);
                 }
 
                 if (!UserChatIDs.ContainsKey(msg.From.Id))
@@ -553,7 +555,7 @@ If the most recent messages are in English, than respond with your message in En
                 if (!botreseponse.StartsWith("Error:"))
                     RecordMessage(msg.Chat.Id, new MsgRecord() { msg = botreseponse, when = DateTime.UtcNow, user = BotUsername });
 
-                await Bot.SendTextMessageAsync(msg.Chat.Id, botreseponse);
+                await Bot.SendMessage(msg.Chat.Id, botreseponse);
                 return;
             }
 
@@ -626,7 +628,7 @@ If the most recent messages are in English, than respond with your message in En
                 chatid = uid;
                 Log(true, "Can't find chat id for uid " + uid + " to send notification...");
             }
-            await Bot.ForwardMessageAsync(chatid, msg.Chat.Id, msg.MessageId);
+            await Bot.ForwardMessage(chatid, msg.Chat.Id, msg.MessageId);
         }
 
 
@@ -693,43 +695,6 @@ If the most recent messages are in English, than respond with your message in En
             //return await DoAIcallGPT4(OpenAIApiKey, system, text);
         }
 
-        static async Task<string> DoAIcallGPT4(string apikey, string systemprompt, string usertext)
-        {
-            string response;
-            string debug = "";
-            try
-            {
-                OpenAIAPI api = new OpenAIAPI(apikey);
-                var result = await api.Chat.CreateChatCompletionAsync(new ChatRequest()
-                {
-                    Model = Model.GPT4,
-                    //Temperature = 0.1,
-                    //MaxTokens = 50,
-                    Messages = new ChatMessage[] {
-                    new ChatMessage(ChatMessageRole.System, systemprompt),
-                    new ChatMessage(ChatMessageRole.User, usertext)
-                }
-                });
-                if (result.Choices.Count > 0)
-                    response = result.Choices[0].Message.TextContent;
-                else
-                    response = "No response from ChatGPT!";
-                debug = $"Tokens: Prompt={result.Usage.PromptTokens} Completion={result.Usage.CompletionTokens} Total={result.Usage.TotalTokens}";
-            }
-            catch (AuthenticationException ex)
-            {
-                response = ex.Message;
-            }
-            catch (HttpRequestException ex)
-            {
-                response = ex.ToString();
-            }
-            
-            Log(false, $"ChatGPT PROMPT=\n{usertext}\n\n\nRESPONSE={response}\n\nDEBUG={debug}");
-            
-            return response;
-        }
-
         static async Task<string> DoAIcallClaude(string apikey, string systemprompt, string usertext)
         {
             RestRequest request = new RestRequest("https://api.anthropic.com/v1/messages", Method.Post);
@@ -751,7 +716,7 @@ If the most recent messages are in English, than respond with your message in En
             string debug;
             try
             {
-                request.Timeout = 300000;
+                request.Timeout = TimeSpan.FromSeconds(300);
                 request.AddJsonBody(req);
 
                 var res = await new RestClient().ExecuteAsync(request);
